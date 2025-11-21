@@ -37,18 +37,103 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.draw.scale
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.foundation.Image
+import kotlinx.coroutines.launch
+import retrofit2.Converter
+import okhttp3.ResponseBody
+import java.lang.reflect.Type
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import retrofit2.http.Body
+import retrofit2.http.POST
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import java.util.concurrent.TimeUnit
+import java.util.regex.Pattern
+import androidx.compose.foundation.shape.CircleShape
 
 val color405B5E = Color(0xFF405B5E) // Основной фон
 val color718189 = Color(0xFF718189) // Серый фон
-val color6E828C = Color(0xFF6E828C)
 val colorFFF1E1 = Color(0xFFFFF1E1)
 val color053740 = Color(0xFF053740)
 val colorFF06373E = Color(0xFF06373E) //Таб меню
 val color6E828C6B = Color(0x6B6E828C) // 42% прозрачности
-val color06373E7A = Color(0x7A06373E) // 48% прозрачности
-val color718189AD = Color(0xAD718189) // 68% прозрачности
 val curtainPositionState = mutableStateOf(50f)
 
+data class RegisterRequest(
+    val username: String,
+    val firstName: String,
+    val lastName: String,
+    val email: String,
+    val phoneNumber: String,
+    val password: String
+)
+
+data class LoginRequest(
+    val username: String,
+    val password: String
+)
+
+
+// API Service interface - измените возвращаемые типы
+interface ApiService {
+    @POST("api/v1/users/register")
+    suspend fun register(@Body request: com.example.manageapplication.RegisterRequest): String
+
+    @POST("api/v1/users/login")
+    suspend fun login(@Body request: LoginRequest): String
+}
+
+class StringConverterFactory : Converter.Factory() {
+    override fun responseBodyConverter(
+        type: Type,
+        annotations: Array<Annotation>,
+        retrofit: Retrofit
+    ): Converter<ResponseBody, *>? {
+        if (type == String::class.java) {
+            return Converter<ResponseBody, String> { responseBody ->
+                responseBody.string()
+            }
+        }
+        return null
+    }
+}
+
+object RetrofitClient {
+    private const val BASE_URL = "https://xn----dtbwmdc.xn--p1ai/"
+
+    private val loggingInterceptor = HttpLoggingInterceptor().apply {
+        level = HttpLoggingInterceptor.Level.BODY
+    }
+
+    private val client = OkHttpClient.Builder()
+        .addInterceptor(loggingInterceptor)
+        .addInterceptor { chain ->
+            val request = chain.request().newBuilder()
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Accept", "application/json")
+                .build()
+            chain.proceed(request)
+        }
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    val instance: com.example.manageapplication.ApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl(BASE_URL)
+            .addConverterFactory(StringConverterFactory())
+            .addConverterFactory(GsonConverterFactory.create())
+            .client(client)
+            .build()
+            .create(com.example.manageapplication.ApiService::class.java)
+    }
+}
+
+// Token manager (you can store token in SharedPreferences)
+object TokenManager {
+    var token: String by mutableStateOf("")
+}
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,19 +150,22 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainApp() {
     var selectedTab by remember { mutableStateOf(1) }
-    var currentScreen by remember { mutableStateOf("main") } // "main", "login", "register"
+    var currentScreen by remember { mutableStateOf("main") }
+    var isLoggedIn by remember { mutableStateOf(TokenManager.token.isNotEmpty()) }
+    var showLogoutDialog by remember { mutableStateOf(false) }
+
+    // Состояние для имени пользователя
+    var currentUserName by remember { mutableStateOf("") }
 
     Scaffold(
         bottomBar = {
-            // показываем нижнее меню только на главной и конструкторе
-            if (currentScreen == "main" || currentScreen == "manage") {
+            if (currentScreen == "main" || currentScreen == "manage" || currentScreen == "devices") {
                 NavigationBar(
                     containerColor = colorFF06373E
                 ) {
                     NavigationBarItem(
-                        selected = selectedTab == 0,
+                        selected = currentScreen == "manage",
                         onClick = {
-                            selectedTab = 0
                             currentScreen = "manage"
                         },
                         icon = {
@@ -90,9 +178,8 @@ fun MainApp() {
                         label = { Text("Управление", color = Color.White) }
                     )
                     NavigationBarItem(
-                        selected = selectedTab == 1,
+                        selected = currentScreen == "main",
                         onClick = {
-                            selectedTab = 1
                             currentScreen = "main"
                         },
                         icon = {
@@ -105,20 +192,38 @@ fun MainApp() {
                         label = { Text("Главная", color = Color.White) }
                     )
                     NavigationBarItem(
-                        selected = selectedTab == 2,
+                        selected = currentScreen == "devices",
                         onClick = {
-                            selectedTab = 2
-                            currentScreen = "login"
+                            if (isLoggedIn) {
+                                currentScreen = "devices" // Прямой переход на устройства
+                            } else {
+                                currentScreen = "login"
+                            }
                         },
                         icon = {
                             Icon(
-                                painter = painterResource(id = R.drawable.entry),
-                                tint = Color.White,
-                                contentDescription = "Вход"
+                                painter = painterResource(id = if (isLoggedIn) R.drawable.profile else R.drawable.logout),
+                                contentDescription = if (isLoggedIn) "Профиль" else "Вход"
                             )
                         },
-                        label = { Text("Вход", color = Color.White) }
+                        label = { Text(if (isLoggedIn) "Профиль" else "Вход", color = Color.White) }
                     )
+                    if (isLoggedIn) {
+                        NavigationBarItem(
+                            selected = false,
+                            onClick = {
+                                showLogoutDialog = true
+                            },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.logout),
+                                    tint = Color.White,
+                                    contentDescription = "Выйти"
+                                )
+                            },
+                            label = { Text("Выйти", color = Color.White) }
+                        )
+                    }
                 }
             }
         }
@@ -128,14 +233,214 @@ fun MainApp() {
             "login" -> LoginScreen(
                 modifier = Modifier.padding(paddingValues),
                 onRegisterClick = { currentScreen = "register" },
-                onBackClick = { currentScreen = "main" }
+                onBackClick = { currentScreen = "main" },
+                onLoginSuccess = { username ->
+                    isLoggedIn = true
+                    currentUserName = username
+                    currentScreen = "main"
+                }
             )
             "register" -> RegisterScreen(
                 modifier = Modifier.padding(paddingValues),
                 onLoginClick = { currentScreen = "login" },
-                onBackClick = { currentScreen = "main" }
+                onBackClick = { currentScreen = "main" },
+                onRegisterSuccess = {
+                    currentScreen = "login"
+                }
             )
             "manage" -> ManageScreen(Modifier.padding(paddingValues))
+            "devices" -> DevicesScreen(Modifier.padding(paddingValues))
+            // Убираем экран "profile" полностью
+        }
+    }
+
+    // Диалог подтверждения выхода
+    if (showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutDialog = false },
+            title = {
+                Text(
+                    text = "Выход из аккаунта",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "Вы уверены, что хотите выйти из аккаунта?",
+                    fontSize = 16.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        TokenManager.token = ""
+                        isLoggedIn = false
+                        currentUserName = ""
+                        currentScreen = "main"
+                        showLogoutDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5722))
+                ) {
+                    Text("Выйти", color = Color.White)
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { showLogoutDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)
+                ) {
+                    Text("Отмена", color = Color.White)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun DevicesScreen(modifier: Modifier = Modifier) {
+    var showDevelopmentDialog by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(color405B5E)
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+
+        Text(
+            text = "Мои устройства",
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            modifier = Modifier.padding(bottom = 32.dp)
+        )
+
+        // Карточка устройства
+        DeviceCard(
+            deviceName = "Умная штора - Гостиная",
+            deviceType = "Шторка с электроприводом",
+            status = "Подключено",
+            isOnline = true
+        )
+
+        DeviceCard(
+            deviceName = "Умная штора - Спальня",
+            deviceType = "Шторка с электроприводом",
+            status = "Не подключено",
+            isOnline = false
+        )
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+// Кнопка добавления устройства
+        Button(
+            onClick = { showDevelopmentDialog = true },
+            colors = ButtonDefaults.buttonColors(containerColor = color6E828C6B),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(80.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.plusik),
+                    contentDescription = "Добавить устройство",
+                    tint = Color.White,
+                    modifier = Modifier.size(32.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "Добавить устройство",
+                    color = Color.White,
+                    fontSize = 18.sp
+                )
+            }
+        }
+    }
+
+    // Диалоговое окно о разработке
+    if (showDevelopmentDialog) {
+        AlertDialog(
+            onDismissRequest = { showDevelopmentDialog = false },
+            title = {
+                Text(
+                    text = "Функционал в разработке",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "Данная функция находится в разработке и будет доступна в ближайшее время.",
+                    fontSize = 16.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showDevelopmentDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = color053740)
+                ) {
+                    Text("Понятно", color = Color.White)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun DeviceCard(
+    deviceName: String,
+    deviceType: String,
+    status: String,
+    isOnline: Boolean
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF06373E))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = deviceName,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Text(
+                    text = deviceType,
+                    fontSize = 14.sp,
+                    color = Color.LightGray
+                )
+                Text(
+                    text = status,
+                    fontSize = 14.sp,
+                    color = if (isOnline) Color(0xFF81CA86) else Color(0xFFC26767)
+                )
+            }
+
+            // Индикатор статуса
+            Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .background(
+                        color = if (isOnline) Color(0xFF81CA86) else Color(0xFFC26767),
+                        shape = CircleShape
+                    )
+            )
         }
     }
 }
@@ -625,9 +930,7 @@ fun ManageScreen(modifier: Modifier = Modifier) {
             slogan = "Пробуждение с плавным подъемом шторки",
             description = listOf(
                 "Открыть шторку на 80%",
-                "Включить чайник",
-                "Включить мягкий свет",
-                "Запустить утренний плейлист"
+                "Какой-то текст ещё"
             ),
             onActivate = { curtainPosition = 80f }, // ← ДОБАВЬТЕ
             onDeactivate = { curtainPosition = 50f } // ← ДОБАВЬТЕ
@@ -640,9 +943,7 @@ fun ManageScreen(modifier: Modifier = Modifier) {
             slogan = "Создайте атмосферу для просмотра фильма",
             description = listOf(
                 "Закрыть шторку полностью",
-                "Приглушить свет до 10%",
-                "Включить TV и саундбар",
-                "Активировать режим 'Не беспокоить'"
+                "Какой-то текст ещё",
             ),
             onActivate = { curtainPosition = 100f }, // ← ДОБАВЬТЕ
             onDeactivate = { curtainPosition = 50f } // ← ДОБАВЬТЕ
@@ -952,32 +1253,47 @@ fun SuccessDialog(
     )
 }
 
+fun isValidEmail(email: String): Boolean {
+    val emailRegex = Pattern.compile(
+        "^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\$"
+    )
+    return emailRegex.matcher(email).matches()
+}
+
+fun isValidName(name: String): Boolean {
+    val nameRegex = Pattern.compile("^[a-zA-Zа-яА-ЯёЁ\\s-]+\$")
+    return nameRegex.matcher(name).matches() && name.length >= 2
+}
+
+fun isValidUsername(username: String): Boolean {
+    val usernameRegex = Pattern.compile("^[a-zA-Z0-9_]+\$")
+    return usernameRegex.matcher(username).matches() && username.length >= 3
+}
+
+fun isValidPhone(phone: String): Boolean {
+    val phoneRegex = Pattern.compile("^[+0-9\\s-()]+\$")
+    return phoneRegex.matcher(phone).matches() && phone.length >= 5
+}
+
 @Composable
 fun LoginScreen(
     modifier: Modifier = Modifier,
     onRegisterClick: () -> Unit,
-    onBackClick: () -> Unit
+    onBackClick: () -> Unit,
+    onLoginSuccess: (username: String) -> Unit
 ) {
-    var email by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var showSuccessDialog by remember { mutableStateOf(false) }
-
-    if (showSuccessDialog) {
-        SuccessDialog(
-            title = "Успешный вход!",
-            message = "Добро пожаловать в приложение!",
-            onDismiss = {
-                showSuccessDialog = false
-            }
-        )
-    }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(color053740)
     ) {
-        BackButton(onBackClick = onBackClick)
+        com.example.manageapplication.BackButton(onBackClick = onBackClick)
 
         Column(
             modifier = Modifier
@@ -996,24 +1312,33 @@ fun LoginScreen(
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
+            errorMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = Color.Red,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+            }
+
             OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Электронная почта", color = Color.LightGray) }, // ← БЕЛЫЙ LABEL
+                value = username,
+                onValueChange = { username = it },
+                label = { Text("Имя пользователя", color = Color.LightGray) },
                 colors = TextFieldDefaults.colors(
                     focusedTextColor = Color.Black,
                     unfocusedTextColor = Color.Black,
                     focusedContainerColor = Color.White,
                     unfocusedContainerColor = Color.White,
-                    focusedIndicatorColor = Color.Gray, // обводка при фокусе
-                    unfocusedIndicatorColor = Color.LightGray, // обводка без фокуса
+                    focusedIndicatorColor = Color.Gray,
+                    unfocusedIndicatorColor = Color.LightGray,
                     cursorColor = Color.Black
                 ),
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions.Default.copy(
-                    keyboardType = KeyboardType.Email,
+                    keyboardType = KeyboardType.Text,
                     imeAction = ImeAction.Next
-                )
+                ),
+                isError = errorMessage != null
             )
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -1021,14 +1346,14 @@ fun LoginScreen(
             OutlinedTextField(
                 value = password,
                 onValueChange = { password = it },
-                label = { Text("Пароль", color = Color.LightGray) }, // ← БЕЛЫЙ LABEL
+                label = { Text("Пароль", color = Color.LightGray) },
                 colors = TextFieldDefaults.colors(
                     focusedTextColor = Color.Black,
                     unfocusedTextColor = Color.Black,
                     focusedContainerColor = Color.White,
                     unfocusedContainerColor = Color.White,
-                    focusedIndicatorColor = Color.Gray, // обводка при фокусе
-                    unfocusedIndicatorColor = Color.LightGray, // обводка без фокуса
+                    focusedIndicatorColor = Color.Gray,
+                    unfocusedIndicatorColor = Color.LightGray,
                     cursorColor = Color.Black
                 ),
                 visualTransformation = PasswordVisualTransformation(),
@@ -1036,24 +1361,76 @@ fun LoginScreen(
                 keyboardOptions = KeyboardOptions.Default.copy(
                     keyboardType = KeyboardType.Password,
                     imeAction = ImeAction.Done
-                )
+                ),
+                isError = errorMessage != null
             )
 
             Spacer(modifier = Modifier.height(20.dp))
 
             Button(
                 onClick = {
-                    if (email.isNotBlank() && password.isNotBlank()) {
-                        showSuccessDialog = true
+                    if (username.isNotBlank() && password.isNotBlank()) {
+                        isLoading = true
+                        errorMessage = null
+                        coroutineScope.launch {
+                            try {
+                                val response = com.example.manageapplication.RetrofitClient.instance.login(
+                                    LoginRequest(username, password)
+                                )
+
+                                // Проверяем, что это не сообщение об ошибке
+                                if (response.contains("Bad credentials", ignoreCase = true) ||
+                                    response.contains("error", ignoreCase = true) ||
+                                    response.contains("403", ignoreCase = true) ||
+                                    response.contains("forbidden", ignoreCase = true) ||
+                                    response.contains("unauthorized", ignoreCase = true) ||
+                                    response.length < 20 // JWT токен обычно длинный (>20 символов)
+                                ) {
+                                    errorMessage = "Неверный логин или пароль"
+                                    isLoading = false
+                                    return@launch
+                                }
+
+                                com.example.manageapplication.TokenManager.token = response
+                                isLoading = false
+                                onLoginSuccess(username)
+                            } catch (e: Exception) {
+                                isLoading = false
+                                errorMessage = when {
+                                    e is java.net.ConnectException -> "Не удалось подключиться к серверу"
+                                    e is java.net.SocketTimeoutException -> "Таймаут подключения"
+                                    e is retrofit2.HttpException -> {
+                                        when (e.code()) {
+                                            403, 401 -> "Неверный логин или пароль"
+                                            500 -> "Ошибка сервера (500). Попробуйте позже"
+                                            400 -> "Неверные данные"
+                                            else -> "Ошибка авторизации"
+                                        }
+                                    }
+                                    e.message?.contains("Unable to resolve host") == true -> "Проблемы с интернет-соединением"
+                                    else -> "Неверный логин или пароль"
+                                }
+                                println("Login error: ${e.message}")
+                            }
+                        }
+                    } else {
+                        errorMessage = "Заполните все поля"
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = color053740),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                enabled = email.isNotBlank() && password.isNotBlank()
+                enabled = !isLoading && username.isNotBlank() && password.isNotBlank()
             ) {
-                Text("Войти", color = Color.White, fontSize = 18.sp)
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White
+                    )
+                } else {
+                    Text("Войти", color = Color.White, fontSize = 18.sp)
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -1068,26 +1445,88 @@ fun LoginScreen(
     }
 }
 
+// Обновите RegisterScreen (уберите проверку существующих пользователей)
 @Composable
 fun RegisterScreen(
     modifier: Modifier = Modifier,
     onLoginClick: () -> Unit,
-    onBackClick: () -> Unit
+    onBackClick: () -> Unit,
+    onRegisterSuccess: () -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
+    var firstName by remember { mutableStateOf("") }
+    var lastName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
+    var phoneNumber by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var showSuccessDialog by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
-    if (showSuccessDialog) {
-        SuccessDialog(
-            title = "Успешная регистрация!",
-            message = "Аккаунт для $email успешно создан.",
-            onDismiss = {
-                showSuccessDialog = false
-                onLoginClick()
-            }
-        )
+    // Валидационные состояния
+    var usernameError by remember { mutableStateOf<String?>(null) }
+    var firstNameError by remember { mutableStateOf<String?>(null) }
+    var lastNameError by remember { mutableStateOf<String?>(null) }
+    var emailError by remember { mutableStateOf<String?>(null) }
+    var phoneError by remember { mutableStateOf<String?>(null) }
+    var passwordError by remember { mutableStateOf<String?>(null) }
+
+    fun validateAll(): Boolean {
+        var isValid = true
+
+        // Валидация имени пользователя
+        usernameError = when {
+            username.isBlank() -> "Обязательное поле"
+            !com.example.manageapplication.isValidUsername(username) -> "Только буквы, цифры и подчеркивание"
+            username.length < 3 -> "Минимум 3 символа"
+            else -> null
+        }
+        if (usernameError != null) isValid = false
+
+        // Валидация имени
+        firstNameError = when {
+            firstName.isBlank() -> "Обязательное поле"
+            !com.example.manageapplication.isValidName(firstName) -> "Только буквы и дефисы"
+            firstName.length < 2 -> "Минимум 2 символа"
+            else -> null
+        }
+        if (firstNameError != null) isValid = false
+
+        // Валидация фамилии
+        lastNameError = when {
+            lastName.isBlank() -> "Обязательное поле"
+            !com.example.manageapplication.isValidName(lastName) -> "Только буквы и дефисы"
+            lastName.length < 2 -> "Минимум 2 символа"
+            else -> null
+        }
+        if (lastNameError != null) isValid = false
+
+        // Валидация email
+        emailError = when {
+            email.isBlank() -> "Обязательное поле"
+            !com.example.manageapplication.isValidEmail(email) -> "Неверный формат email"
+            else -> null
+        }
+        if (emailError != null) isValid = false
+
+        // Валидация телефона
+        phoneError = when {
+            phoneNumber.isBlank() -> "Обязательное поле"
+            !com.example.manageapplication.isValidPhone(phoneNumber) -> "Только цифры и символы +-()"
+            phoneNumber.length < 5 -> "Минимум 5 символов"
+            else -> null
+        }
+        if (phoneError != null) isValid = false
+
+        // Валидация пароля
+        passwordError = when {
+            password.isBlank() -> "Обязательное поле"
+            password.length < 6 -> "Минимум 6 символов"
+            else -> null
+        }
+        if (passwordError != null) isValid = false
+
+        return isValid
     }
 
     Box(
@@ -1095,11 +1534,12 @@ fun RegisterScreen(
             .fillMaxSize()
             .background(color053740)
     ) {
-        BackButton(onBackClick = onBackClick)
+        com.example.manageapplication.BackButton(onBackClick = onBackClick)
 
         Column(
             modifier = Modifier
                 .align(Alignment.Center)
+                .verticalScroll(rememberScrollState())
                 .shadow(8.dp, RoundedCornerShape(16.dp))
                 .background(color718189, RoundedCornerShape(16.dp))
                 .padding(24.dp)
@@ -1114,65 +1554,189 @@ fun RegisterScreen(
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
-            OutlinedTextField(
-                value = name,
-                onValueChange = { newText ->
-                    val filteredText = newText.filter { it.isLetter() || it.isWhitespace() }
-                    name = filteredText
-                },
+            errorMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = Color.Red,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+            }
 
-                label = { Text("Имя", color = Color.LightGray) }, // ← БЕЛЫЙ LABEL
+            // Поле имени пользователя
+            OutlinedTextField(
+                value = username,
+                onValueChange = {
+                    username = it
+                    usernameError = null
+                },
+                label = { Text("Имя пользователя", color = Color.LightGray) },
                 colors = TextFieldDefaults.colors(
                     focusedTextColor = Color.Black,
                     unfocusedTextColor = Color.Black,
                     focusedContainerColor = Color.White,
                     unfocusedContainerColor = Color.White,
-                    focusedIndicatorColor = Color.Gray, // обводка при фокусе
-                    unfocusedIndicatorColor = Color.LightGray, // обводка без фокуса
+                    focusedIndicatorColor = Color.Gray,
+                    unfocusedIndicatorColor = Color.LightGray,
                     cursorColor = Color.Black
                 ),
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions.Default.copy(
                     keyboardType = KeyboardType.Text,
                     imeAction = ImeAction.Next
-                )
+                ),
+                isError = usernameError != null,
+                supportingText = {
+                    usernameError?.let { error ->
+                        Text(text = error, color = Color.Red)
+                    }
+                }
             )
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            // Поле имени
             OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Электронная почта", color = Color.LightGray) }, // ← БЕЛЫЙ LABEL
+                value = firstName,
+                onValueChange = {
+                    firstName = it
+                    firstNameError = null
+                },
+                label = { Text("Имя", color = Color.LightGray) },
                 colors = TextFieldDefaults.colors(
                     focusedTextColor = Color.Black,
                     unfocusedTextColor = Color.Black,
                     focusedContainerColor = Color.White,
                     unfocusedContainerColor = Color.White,
-                    focusedIndicatorColor = Color.Gray, // обводка при фокусе
-                    unfocusedIndicatorColor = Color.LightGray, // обводка без фокуса
+                    focusedIndicatorColor = Color.Gray,
+                    unfocusedIndicatorColor = Color.LightGray,
+                    cursorColor = Color.Black
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions.Default.copy(
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.Next
+                ),
+                isError = firstNameError != null,
+                supportingText = {
+                    firstNameError?.let { error ->
+                        Text(text = error, color = Color.Red)
+                    }
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Поле фамилии
+            OutlinedTextField(
+                value = lastName,
+                onValueChange = {
+                    lastName = it
+                    lastNameError = null
+                },
+                label = { Text("Фамилия", color = Color.LightGray) },
+                colors = TextFieldDefaults.colors(
+                    focusedTextColor = Color.Black,
+                    unfocusedTextColor = Color.Black,
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                    focusedIndicatorColor = Color.Gray,
+                    unfocusedIndicatorColor = Color.LightGray,
+                    cursorColor = Color.Black
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions.Default.copy(
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.Next
+                ),
+                isError = lastNameError != null,
+                supportingText = {
+                    lastNameError?.let { error ->
+                        Text(text = error, color = Color.Red)
+                    }
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Поле email
+            OutlinedTextField(
+                value = email,
+                onValueChange = {
+                    email = it
+                    emailError = null
+                },
+                label = { Text("Email", color = Color.LightGray) },
+                colors = TextFieldDefaults.colors(
+                    focusedTextColor = Color.Black,
+                    unfocusedTextColor = Color.Black,
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                    focusedIndicatorColor = Color.Gray,
+                    unfocusedIndicatorColor = Color.LightGray,
                     cursorColor = Color.Black
                 ),
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions.Default.copy(
                     keyboardType = KeyboardType.Email,
                     imeAction = ImeAction.Next
-                )
+                ),
+                isError = emailError != null,
+                supportingText = {
+                    emailError?.let { error ->
+                        Text(text = error, color = Color.Red)
+                    }
+                }
             )
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            // Поле телефона
             OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Пароль", color = Color.LightGray) }, // ← БЕЛЫЙ LABEL
+                value = phoneNumber,
+                onValueChange = {
+                    phoneNumber = it
+                    phoneError = null
+                },
+                label = { Text("Номер телефона", color = Color.LightGray) },
                 colors = TextFieldDefaults.colors(
                     focusedTextColor = Color.Black,
                     unfocusedTextColor = Color.Black,
                     focusedContainerColor = Color.White,
                     unfocusedContainerColor = Color.White,
-                    focusedIndicatorColor = Color.Gray, // обводка при фокусе
-                    unfocusedIndicatorColor = Color.LightGray, // обводка без фокуса
+                    focusedIndicatorColor = Color.Gray,
+                    unfocusedIndicatorColor = Color.LightGray,
+                    cursorColor = Color.Black
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions.Default.copy(
+                    keyboardType = KeyboardType.Phone,
+                    imeAction = ImeAction.Next
+                ),
+                isError = phoneError != null,
+                supportingText = {
+                    phoneError?.let { error ->
+                        Text(text = error, color = Color.Red)
+                    }
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Поле пароля
+            OutlinedTextField(
+                value = password,
+                onValueChange = {
+                    password = it
+                    passwordError = null
+                },
+                label = { Text("Пароль", color = Color.LightGray) },
+                colors = TextFieldDefaults.colors(
+                    focusedTextColor = Color.Black,
+                    unfocusedTextColor = Color.Black,
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                    focusedIndicatorColor = Color.Gray,
+                    unfocusedIndicatorColor = Color.LightGray,
                     cursorColor = Color.Black
                 ),
                 visualTransformation = PasswordVisualTransformation(),
@@ -1180,24 +1744,71 @@ fun RegisterScreen(
                 keyboardOptions = KeyboardOptions.Default.copy(
                     keyboardType = KeyboardType.Password,
                     imeAction = ImeAction.Done
-                )
+                ),
+                isError = passwordError != null,
+                supportingText = {
+                    passwordError?.let { error ->
+                        Text(text = error, color = Color.Red)
+                    }
+                }
             )
 
             Spacer(modifier = Modifier.height(20.dp))
 
             Button(
                 onClick = {
-                    if (name.isNotBlank() && email.isNotBlank() && password.isNotBlank()) {
-                        showSuccessDialog = true
+                    if (validateAll()) {
+                        isLoading = true
+                        errorMessage = null
+                        coroutineScope.launch {
+                            try {
+                                val token = com.example.manageapplication.RetrofitClient.instance.register(
+                                    RegisterRequest(
+                                        username = username,
+                                        firstName = firstName,
+                                        lastName = lastName,
+                                        email = email,
+                                        phoneNumber = phoneNumber,
+                                        password = password
+                                    )
+                                )
+                                com.example.manageapplication.TokenManager.token = token
+                                isLoading = false
+                                onRegisterSuccess()
+                            } catch (e: Exception) {
+                                isLoading = false
+                                errorMessage = when {
+                                    e is java.net.ConnectException -> "Не удалось подключиться к серверу"
+                                    e is java.net.SocketTimeoutException -> "Таймаут подключения"
+                                    e is retrofit2.HttpException -> {
+                                        when (e.code()) {
+                                            403 -> "Доступ запрещен. Проверьте данные или обратитесь к администратору"
+                                            500 -> "Ошибка сервера (500). Попробуйте позже"
+                                            400 -> "Неверные данные"
+                                            else -> "Ошибка HTTP: ${e.code()}"
+                                        }
+                                    }
+                                    else -> "Ошибка: ${e.message ?: "Неизвестная ошибка"}"
+                                }
+                                println("Registration error: ${e.stackTraceToString()}")
+                            }
+                        }
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = color053740),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                enabled = name.isNotBlank() && email.isNotBlank() && password.isNotBlank()
+                enabled = !isLoading
             ) {
-                Text("Создать аккаунт", color = Color.White, fontSize = 18.sp)
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White
+                    )
+                } else {
+                    Text("Создать аккаунт", color = Color.White, fontSize = 18.sp)
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -1211,22 +1822,3 @@ fun RegisterScreen(
         }
     }
 }
-
-@Composable
-fun AuthApp(onBackClick: () -> Unit) {
-    var showLogin by remember { mutableStateOf(true) }
-
-    if (showLogin) {
-        LoginScreen(
-            onRegisterClick = { showLogin = false },
-            onBackClick = onBackClick
-        )
-    } else {
-        RegisterScreen(
-            onLoginClick = { showLogin = true },
-            onBackClick = onBackClick
-        )
-    }
-}
-
-data class Product(val name: String, val description: String, val image: Int)
